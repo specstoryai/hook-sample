@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PROJECT_DIR}/.specstory/hook.sh\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

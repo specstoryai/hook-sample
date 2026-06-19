@@ -1,0 +1,16 @@
+# SpecStory CLI — project config (committed to the repo).
+#
+# This is the "configure once" layer: settings here apply to this project for
+# every teammate, overridable only by CLI flags. Loaded automatically by the
+# specstory binary; see the bootstrap shim in ../hook.sh for how the binary
+# gets there in the first place.
+#
+# Uncomment and edit to change defaults.
+
+[local_sync]
+# Write markdown history into ./.specstory/history (default: true)
+# enabled = true
+
+[version_check]
+# The shim pins the version, so skip the CLI's own update nag.
+enabled = false
