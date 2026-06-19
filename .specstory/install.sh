@@ -26,9 +26,22 @@ case "$OS" in
   *) echo "specstory-install: unsupported os '$OS'" >&2; exit 1 ;;
 esac
 
+# Download $1 to stdout using whatever HTTP client the machine has. Clean macOS
+# ships curl; many minimal Linux images ship only wget (or neither).
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- "$1"
+  else
+    echo "specstory-install: need 'curl' or 'wget' on PATH" >&2
+    return 1
+  fi
+}
+
 # Resolve "latest" to a concrete tag if no version was pinned.
 if [ "$VERSION" = "latest" ]; then
-  VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+  VERSION=$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
     | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 fi
 [ -n "$VERSION" ] || { echo "specstory-install: could not resolve version" >&2; exit 1; }
@@ -42,7 +55,7 @@ TMP=$(mktemp -d)
 trap "rm -rf '$TMP'" EXIT
 
 echo "specstory-install: downloading $VERSION ($OS/$ARCH)..." >&2
-curl -fsSL "$URL" | tar -xz -C "$TMP"
+fetch "$URL" | tar -xz -C "$TMP"
 mv "$TMP/$BIN_NAME" "$BIN_DIR/$BIN_NAME"
 chmod +x "$BIN_DIR/$BIN_NAME"
 echo "specstory-install: installed -> $BIN_DIR/$BIN_NAME" >&2
