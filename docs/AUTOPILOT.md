@@ -151,8 +151,9 @@ available, in order:
    `curl|sh`. The kicker: **Claude Code is itself an npm package, so Node/`npx`
    is already present** in any Claude Code environment — zero new prerequisite.
 2. **Homebrew tap** (`brew install specstoryai/tap/specstory`) — **live today**
-   (`specstoryai/homebrew-tap`). For non-Node environments. Trusted, no sudo,
-   auditable, standard upgrade/uninstall.
+   (`specstoryai/homebrew-tap`). Works on **macOS and Linux/WSL** (Homebrew runs
+   on both). For non-Node environments. Trusted, no sudo, auditable, standard
+   upgrade/uninstall.
 3. **Checksum-verified GitHub Release download** — the zero-prerequisite fallback
    (needs only `curl` or `wget`). The downloaded tarball is verified against the
    SHA-256 committed in `.specstory/cli/checksums.txt` before it runs.
@@ -179,6 +180,25 @@ Independent of channel:
 
 Version detection tolerates the tag-vs-bare-number mismatch (pin is `v1.13.0`,
 binary reports `1.13.0`).
+
+#### Status today
+
+Two of the three channels are real right now — before any new work:
+
+| Tier | Channel | Status |
+| --- | --- | --- |
+| 1 | `npx @specstory/cli@<pinned>` | ⏳ pending npm publish (the one remaining build item) |
+| 2 | `brew install specstoryai/tap/specstory` | ✅ live — macOS **and** Linux/WSL; tracks stable |
+| 3 | checksum-verified GitHub Release download | ✅ live & tested (macOS; glibc + musl Linux; arm64 + x86_64) |
+| — | fail open | ✅ |
+
+So a clean machine already has two trusted channels (brew on macOS/Linux, the
+checksum-verified download everywhere); the npx tier slots in on top once the
+package is published. The prototype proves the chain degrades gracefully until
+then — an unpublished `npx` falls straight through to the verified download.
+
+Resolution order in the hook: **already-installed → npx → brew → checksum-verified
+download → fail open.**
 
 ### Capture timing — the part that matters
 
