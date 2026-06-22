@@ -37,9 +37,13 @@ elif have_version "$BIN"; then
 elif command -v npx >/dev/null 2>&1 && \
      npx --yes "${NPM_PKG}@${VERSION#v}" version >/dev/null 2>&1; then
   RUN="npx --yes ${NPM_PKG}@${VERSION#v}"             # (1) npm registry (Node present)
+elif command -v brew >/dev/null 2>&1 && \
+     { brew list specstory >/dev/null 2>&1 || brew install specstoryai/tap/specstory >&2 2>&1; } && \
+     have_version specstory; then
+  RUN="specstory"                                     # (2) Homebrew tap (live today)
 elif SPECSTORY_VERSION="$VERSION" SPECSTORY_BIN_DIR="$BIN_DIR" \
        SPECSTORY_CHECKSUMS="$CHECKSUMS" sh "$HOOK_DIR/install.sh" >&2; then
-  RUN="$BIN"                                          # (2) checksum-verified download
+  RUN="$BIN"                                          # (3) checksum-verified download
 else
   echo "specstory-hook: no install channel available; skipping capture" >&2
   echo "specstory-hook: tip - 'brew install specstoryai/tap/specstory'" >&2

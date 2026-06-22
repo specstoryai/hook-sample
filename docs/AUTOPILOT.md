@@ -150,8 +150,9 @@ available, in order:
    runs the `hook` subcommand. Version-pinned inline, no committed script, no
    `curl|sh`. The kicker: **Claude Code is itself an npm package, so Node/`npx`
    is already present** in any Claude Code environment — zero new prerequisite.
-2. **Homebrew tap** (`brew install specstoryai/tap/specstory`) — for non-Node
-   environments. Trusted, no sudo, auditable, standard upgrade/uninstall.
+2. **Homebrew tap** (`brew install specstoryai/tap/specstory`) — **live today**
+   (`specstoryai/homebrew-tap`). For non-Node environments. Trusted, no sudo,
+   auditable, standard upgrade/uninstall.
 3. **Checksum-verified GitHub Release download** — the zero-prerequisite fallback
    (needs only `curl` or `wget`). The downloaded tarball is verified against the
    SHA-256 committed in `.specstory/cli/checksums.txt` before it runs.
