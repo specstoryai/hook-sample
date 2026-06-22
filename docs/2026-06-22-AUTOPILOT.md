@@ -30,6 +30,43 @@ clones it." That is the difference between a tool and infrastructure.
 
 ---
 
+## Decisions from the 2026-06-22 review (Jake ⇄ Sean)
+
+This doc was revised after a working session. The shifts from the first draft:
+
+1. **The binary is installed once per machine, never per repo.** An earlier
+   sketch dropped a binary into each project's `.specstory/bin`. Rejected as
+   over-complication: binaries (unlike npm *library* packages) have no
+   cross-project version-conflict problem, so a single machine-level install —
+   exactly what `brew`/`npm` give you — is correct. The hook *checks* for a
+   global specstory and installs one if absent.
+2. **Capture is a persistent `specstory watch --always` daemon, not per-turn
+   syncing.** Agent `Stop`/`SessionEnd` hooks and git `pre-commit` hooks are
+   inconsistent across agents and mistime the commit (sync output lands outside
+   the change set; session-end fires after the commit). The session-start hook's
+   job is to *ensure the watcher is running*, not to sync each turn.
+3. **The session-start hook checks three things** and self-heals what it can:
+   (a) is specstory installed? install if not; (b) is `watch --always` running
+   for this repo? start it if not; (c) *if* the repo targets SpecStory Cloud, is
+   the user logged in? — the only thing the hook can't do unilaterally, so it
+   nudges.
+4. **The tech lead makes exactly one choice at setup: capture into the repo, or
+   capture to SpecStory Cloud.** That single fork decides whether check (c)
+   applies.
+5. **CI enforcement of history *presence* is a dead end.** You can't verify the
+   absence of something centrally, and "every commit must have a history" is false
+   (config tweaks, copy edits — no agent involved) and quickly annoying. The
+   strategy is *make the happy path easy*, not big-brother gating. (Verifying the
+   committed *config* didn't rot is a different, fine thing.)
+6. **Cloud auth for the GitHub use case rides repo permissions** — see
+   [Cloud authentication for the GitHub repo use case](#cloud-authentication-for-the-github-repo-use-case).
+7. **Scope caveat.** This is onboarding/friction-removal for an experience
+   (Cloud teams + the team report/dashboard) that doesn't exist yet. The team
+   *value* comes first; this friction design is captured to revisit when that
+   value ships — it is not an immediate build.
+
+---
+
 ## Design principles (the non-negotiables)
 
 These are not aspirations — every one was forced on us by a real failure or
@@ -39,16 +76,20 @@ finding during prototyping (see [What we've validated](#what-weve-already-valida
    a developer's actual coding session. Offline, GitHub down, wrong arch, no
    download tool — every failure path logs quietly and exits `0`. The first time
    it breaks someone's session, the team rips it out forever.
-2. **No `sudo`, no PATH surgery.** Install one static binary into `~/.specstory/bin`.
-   Reference it by absolute path. Works on locked-down corp laptops with no admin
-   rights. PATH manipulation is the #1 source of "works on my machine."
+2. **One binary per machine, never per repo. No `sudo`, no PATH surgery.** Install
+   a single static binary once at the machine level (`brew`/`npm`, or
+   `~/.specstory/bin`); every repo shares it. Project-scoped binaries are an
+   anti-pattern — binaries have no cross-project version conflicts to isolate.
+   Works on locked-down corp laptops with no admin rights.
 3. **Pinned and reproducible.** The whole team runs one version, pinned in a
    committed file. Bumping it is a normal PR. No "latest" drift.
 4. **Invisible by default, observable on demand.** Steady state is silent. But a
    developer can always see that capture is active and what it did.
-5. **Bootstrap ≠ capture.** Installing the tool and recording a session are
-   different events that happen at different moments. Conflating them is the
-   single most common design mistake here.
+5. **Bootstrap ≠ capture, and capture is a watcher.** Installing the tool and
+   recording sessions are different jobs. The session-start hook *bootstraps*
+   (ensures the binary + the `watch --always` daemon); the daemon *captures*
+   continuously. Per-turn `Stop`/`SessionEnd`/git-hook syncing is unreliable and
+   mistimed — useful only as a fallback.
 6. **One asset, many platforms.** A single static Go binary that runs on
    macOS/Linux, arm64/x86_64, glibc/musl. Distribution is "download one file."
 
@@ -122,18 +163,19 @@ plus a list of checksums; a teammate can audit all of it in under a minute.
    the repo  ─────▶│   • loads committed hook config from repo    │
                    │   • one-time "trust this folder" prompt      │
                    └───────────────┬─────────────────────────────┘
-                                   │ fires hooks
+                                   │ SessionStart hook
                    ┌───────────────▼─────────────────────────────┐
-        SessionStart  ──▶  bootstrap.sh  ──▶  install.sh          │
-                   │      (ensure binary present, no sudo)        │
-        Stop / End    ──▶  bootstrap.sh  ──▶  specstory sync       │
+                   │  `specstory hook <agent> session-start`      │
+                   │   1. ensure binary present (else install)    │
+                   │   2. ensure `watch --always` running here    │
+                   │   3. (cloud target?) ensure logged in        │
                    └───────────────┬─────────────────────────────┘
-                                   │
+                                   │ starts / confirms
                    ┌───────────────▼─────────────────────────────┐
-                   │  ~/.specstory/bin/specstory  (cached, pinned)│
-                   │   • reads agent transcript (JSONL)           │
+                   │  specstory watch --always  (per-machine bin) │
+                   │   • watches the repo's agent transcripts     │
                    │   • writes .specstory/history/*.md           │
-                   │   • optional cloud sync (if logged in)       │
+                   │   • pushes to SpecStory Cloud (if enabled)   │
                    └──────────────────────────────────────────────┘
 ```
 
@@ -200,17 +242,30 @@ then — an unpublished `npx` falls straight through to the verified download.
 Resolution order in the hook: **already-installed → npx → brew → checksum-verified
 download → fail open.**
 
-### Capture timing — the part that matters
+### Capture — a persistent watcher, not per-turn syncing
 
-| Hook event | Role | Why |
-| --- | --- | --- |
-| `SessionStart` | **bootstrap** (install the CLI) | The transcript doesn't exist yet, so there is nothing to capture — but it's the perfect moment to guarantee the tool is present. |
-| `Stop` | **capture after each turn** | Fires when the agent finishes responding; the transcript now has content. Continuous, near-live history. |
-| `SessionEnd` | **capture once at the end** | Lower overhead alternative to `Stop` if per-turn syncing is too chatty. |
+The session-start hook does **not** sync each turn. It ensures a long-running
+**`specstory watch --always`** daemon is watching this repo; the daemon captures
+continuously and (if enabled) pushes to Cloud. This is what makes "will my
+session show up?" deterministic — see [the determinism problem](#open-questions).
 
-A future refinement is starting a **background watcher** at `SessionStart`
-(`specstory watch`) for truly live capture, with `Stop`/`SessionEnd` as the
-guaranteed flush.
+What the session-start hook actually does — all fail-open:
+
+1. **Is specstory installed?** If not, install it (delivery channels above).
+2. **Is `watch --always` running for this repo?** If not, start it.
+3. **Is the user logged in?** Only checked if the repo targets Cloud — the one
+   step the hook can't do for you, so it nudges.
+
+Alternatives considered and rejected as the *primary* mechanism:
+
+| Mechanism | Why not primary |
+| --- | --- |
+| `Stop` hook (per-turn sync) | Inconsistent across agents; likely synchronous (can stall the turn); chatty. |
+| `SessionEnd` hook | Fires after the user has usually already committed — too late to get history into that commit. |
+| git `pre-commit` hook | Sync writes/changes files that aren't in the change set the hook fired on. |
+
+These remain useful *fallbacks* for agents without a usable session-start hook,
+but the watcher is the default.
 
 ---
 
@@ -220,17 +275,17 @@ guaranteed flush.
 
 ```
 clone repo → open agent → trust prompt (one time) →
-  SessionStart: download v1.13.0 → ~/.specstory/bin  (≈1s, once ever) →
-  …developer works… →
-  Stop: specstory sync → .specstory/history/<ts>-<slug>.md appears
+  SessionStart hook: ensure binary (install v1.13.0 once, ≈1s) +
+                     start `specstory watch --always` for this repo →
+  …developer works… → watcher writes .specstory/history/<ts>-<slug>.md live
 ```
 
 **Every session after that**
 
 ```
 open agent → (already trusted) →
-  SessionStart: version match → instant, no download →
-  Stop: sync → history updated
+  SessionStart hook: binary present + watcher already running → instant →
+  watcher keeps capturing
 ```
 
 **Version bump (tech lead edits the pin, merges PR)**
@@ -274,7 +329,7 @@ don't.
 
 | Agent | Trigger surface | Mechanism |
 | --- | --- | --- |
-| Claude Code | `.claude/settings.json` hooks | ✅ validated (SessionStart + Stop) |
+| Claude Code | `.claude/settings.json` hooks | ✅ SessionStart validated; capture via `watch --always` |
 | Cursor | project rules / hooks | native if available |
 | Codex CLI | project config | native if available |
 | Gemini CLI | project config | native if available |
@@ -306,7 +361,9 @@ App turns Tier 1 into a fleet operation and adds an optional server-side half.
 
 - Dependabot-style **version-bump PRs** when a new pinned SpecStory release ships.
 - A CI check (`specstory verify-enrollment`) that fails a PR if someone deletes or
-  breaks the hook wiring — enrollment can't silently rot.
+  breaks the hook *config* — enrollment can't silently rot. (This verifies the
+  committed config, **not** that each commit contains a history — enforcing
+  history *presence* in CI is a rejected dead end; see the 2026-06-22 decisions.)
 
 **Optional server-side value (only if cloud sync is on)**
 
@@ -318,6 +375,34 @@ App turns Tier 1 into a fleet operation and adds an optional server-side half.
 
 - The App writes only the enrollment files; it never needs code-read access to do
   Tier 1. Cloud/dashboard features are strictly opt-in and scoped separately.
+
+---
+
+## Cloud authentication for the GitHub repo use case
+
+Today SpecStory Cloud has no OAuth — a developer must create an account
+(username/password) before anything syncs. For the "tech lead turns it on for a
+repo" flow, that's the friction that breaks "set it up once and it just works."
+Two changes, smallest-blast-radius first:
+
+**1. Repo push-permission *is* Cloud push-permission (the bulletproof path).**
+The most seamless model needs no per-user Cloud account at all. SpecStory keeps a
+**"digital twin" of the repo** in the cloud, and the rule is: *if you can `git
+push` to the repo, you can push to its cloud twin.* The hook verifies this the
+obvious way — would `git push` succeed for this user right now? If yes, their
+histories sync; if no, nothing does. No GitHub OAuth, no Cloud signup, no token to
+manage. (Putting a push token in the repo was considered and **rejected** —
+anti-pattern / nonstarter; rely on the user's existing git permission instead.)
+
+**2. GitHub (and Google) OAuth on Cloud — for the read side.**
+When someone *does* want the reports/dashboard, signing up should be GitHub OAuth
+— "create + authenticate in one fell swoop," biased to GitHub for this flow,
+instead of username/password + manual account creation. The payoff is the mapping:
+**authenticate with GitHub → every repo you can still read → its synced histories
+just show up.** Read access to the repo grants read access to its SpecStory twin.
+
+Net: a developer on an enrolled repo does *nothing* to contribute history
+(push-permission carries it), and needs *one OAuth click* to consume it.
 
 ---
 
@@ -372,8 +457,9 @@ Not theory — exercised end-to-end during prototyping (`specstoryai/hook-sample
 - **Fail-open:** every "nothing to capture" / "not logged in" path exited cleanly
   without disturbing the session.
 
-The two known gaps: macOS **notarization** for pristine Macs, and wiring the
-**`Stop`/`SessionEnd`** hook so capture (not just install) is automatic.
+The known gaps: macOS **notarization** for pristine Macs; wiring `specstory watch
+--always` as the capture daemon (so capture, not just install, is automatic); and
+the Cloud-auth simplifications above.
 
 ---
 
@@ -384,17 +470,21 @@ Each phase is independently shippable and useful on its own.
 1. **Publish `@specstory/cli` to npm.** Platform-binary packages
    (`optionalDependencies`, no `postinstall`), versioned to the release, published
    from CI with `--provenance`. This unlocks the primary delivery channel.
-2. **Add the `specstory hook` subcommand + `specstory init`.** Move the tiering
-   (npx → brew → checksum-verified download → fail open) and capture logic *into
-   the binary*, so a repo commits only declarative config. `init` generates that
-   config (incl. the `Stop` hook) and the checksums file.
+2. **`specstory watch --always` + the `specstory hook` subcommand + `specstory
+   init`.** The always-on watch mode is the capture engine; `hook` ensures the
+   binary and the watcher (npx → brew → checksum-verified download → fail open);
+   `init` generates the committed config + checksums. A repo commits only
+   declarative config.
 3. **Notarize the macOS binary.** Closes the last clean-machine gap.
-4. **Multi-agent stanzas.** Cursor/Codex/Gemini/Droid hook generators + the git-hook
+4. **Cloud auth for the GitHub flow.** GitHub OAuth on Cloud, plus the
+   repo-push-permission → cloud-twin model (read-permission → read of histories).
+5. **Multi-agent stanzas.** Cursor/Codex/Gemini/Droid hook generators + the git-hook
    and `specstory run` fallbacks.
-5. **`specstory status` / observability.** The "capture active" signal and a
+6. **`specstory status` / observability.** The "capture active" signal and a
    status command.
-6. **GitHub App — enrollment.** Fleet PRs + version-bump PRs + the CI verify check.
-7. **GitHub App — dashboard.** Opt-in server-side history, PR↔session links.
+7. **GitHub App — enrollment.** Fleet PRs + version-bump PRs + the config-rot
+   verify check.
+8. **GitHub App — dashboard.** Opt-in server-side history, PR↔session links.
 
 ---
 
@@ -402,10 +492,16 @@ Each phase is independently shippable and useful on its own.
 
 - **Per-agent trust UX.** We confirmed Claude Code's gate; each other agent's
   first-run trust/hook-approval behavior needs the same empirical check.
-- **`Stop` overhead.** Per-turn `sync` vs `SessionEnd` once — measure before
-  defaulting.
-- **Committed-executable comfort.** Some orgs are wary of any repo that ships a
-  script its agents auto-run. The git-hook fallback and a "review the 30-line
-  shim" story are the answer; worth a short SECURITY.md.
+- **Watcher lifecycle.** How `specstory watch --always` is started from a hook,
+  survives across sessions, avoids duplicate watchers per repo, and is cleaned up.
+  Also: which agents actually expose a usable session-start hook to bootstrap it?
+- **Session→Cloud determinism.** Today whether a session reaches Cloud depends on
+  extension / Stoa / `watch` / `sync` state — genuinely hard to answer ("there are
+  only two things that sync: CRDTs and histories; *when* is the complicated part").
+  `watch --always` is the proposed deterministic answer; confirm it holds.
+- **Auto-running daemon comfort.** Some orgs are wary of a repo whose agents
+  auto-install a binary and auto-start a watcher. The opt-out switch, the
+  read-the-config story (no committed scripts), and a short SECURITY.md are the
+  answer.
 - **Monorepo placement.** Where the `.specstory/` lives and how history is scoped
   when many projects share one repo.
